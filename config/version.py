@@ -25,7 +25,7 @@ def load_version():
 
 
 def get_remote_version(owner, repo, branch):
-    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/version.json"
+    url = f"https://raw.githubusercontent.com/hsbrgX/ytdl-cli/main/version.json"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as response:
