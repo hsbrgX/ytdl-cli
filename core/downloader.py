@@ -1,8 +1,5 @@
 import os
-import glob
 import shutil
-import threading
-import time
 import yt_dlp
 from ui.display import render_progress_bar, info, ok
 
@@ -12,7 +9,6 @@ from ui.display import render_progress_bar, info, ok
 ARIA2C_CONNECTIONS = 16
 CONCURRENT_FRAGMENTS = 8
 HTTP_CHUNK_SIZE = 10 * 1024 * 1024  # 10MB per chunk, memaksa reconnect -> anti-throttle
-POLL_INTERVAL = 0.5  # detik, buat polling progress saat pakai aria2c
 
 
 def _build_format_string(format_choice):
@@ -28,9 +24,12 @@ def _using_aria2c():
 def _speed_options():
     """Opsi percepatan download. Prioritas aria2c (multi-koneksi asli) kalau
     terinstall, fallback ke http_chunk_size + concurrent fragments bawaan
-    yt-dlp. Log mentah aria2c DIMATIKAN total (--quiet) supaya tidak spam
-    terminal; progress ditampilkan lewat progress bar custom sendiri
-    (lihat _download_with_progress)."""
+    yt-dlp.
+
+    Progress bar TIDAK ditebak manual lagi. Kalau aria2c aktif, output
+    native progress bar aria2c dibiarkan tampil langsung ke terminal
+    (tidak di-quiet). Kalau tidak, progress_hooks bawaan yt-dlp yang
+    dipakai lewat render_progress_bar (lihat _progress_hook)."""
     opts = {
         "concurrent_fragment_downloads": CONCURRENT_FRAGMENTS,
         "retries": 10,
@@ -47,7 +46,8 @@ def _speed_options():
                 "-s", str(ARIA2C_CONNECTIONS),
                 "-k", "1M",
                 "--min-split-size=1M",
-                "--quiet=true",  # matikan semua output mentah aria2c
+                # --quiet SENGAJA tidak dipasang -> aria2c menampilkan
+                # progress bar native-nya sendiri di terminal.
             ]
         }
     else:
@@ -83,77 +83,6 @@ def _build_options(download_dir, format_choice):
     }
 
 
-def _expected_total_bytes(ydl, url):
-    """Coba tebak total ukuran file dari metadata (buat progress bar saat
-    pakai aria2c, karena progress_hooks yt-dlp tidak dapat data real-time
-    dari downloader eksternal)."""
-    try:
-        data = ydl.extract_info(url, download=False)
-    except Exception:
-        return None
-
-    total = 0
-    requested = data.get("requested_formats") or [data]
-    for f in requested:
-        size = f.get("filesize") or f.get("filesize_approx")
-        if size:
-            total += size
-        else:
-            return None
-    return total or None
-
-
-def _partfile_size(download_dir, before_files):
-    """Jumlah byte semua file baru/berubah di download_dir sejak download
-    dimulai (menangkap .part, .aria2, dan file hasil merge)."""
-    total = 0
-    for path in glob.glob(os.path.join(download_dir, "*")):
-        if os.path.isfile(path) and path not in before_files.get("skip", set()):
-            try:
-                total += os.path.getsize(path)
-            except OSError:
-                pass
-    return total
-
-
-def _download_with_progress(ydl, url, download_dir, label_prefix):
-    """Jalankan ydl.download di thread terpisah, sambil polling ukuran file
-    buat gambar progress bar sendiri (dipakai saat aria2c aktif, karena
-    output mentahnya sudah dimatikan)."""
-    before = {"skip": set(
-        os.path.join(download_dir, n) for n in os.listdir(download_dir)
-    ) if os.path.isdir(download_dir) else set()}
-
-    total = _expected_total_bytes(ydl, url)
-
-    result = {"error": None}
-
-    def _worker():
-        try:
-            ydl.download([url])
-        except Exception as e:
-            result["error"] = e
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-
-    while t.is_alive():
-        downloaded = _partfile_size(download_dir, before)
-        if total:
-            percent = min(downloaded / total * 100, 99)
-            render_progress_bar(percent, f"{label_prefix} {downloaded // (1024*1024)}MB/{total // (1024*1024)}MB")
-        else:
-            render_progress_bar(0, f"{label_prefix} {downloaded // (1024*1024)}MB terunduh...")
-        time.sleep(POLL_INTERVAL)
-
-    t.join()
-    if result["error"]:
-        raise result["error"]
-
-    render_progress_bar(100, "done")
-    print()
-
-
 def download(url, format_choice, title, download_dir, index=None, total_count=None):
     print()
     label = f"[{index}/{total_count}] " if index and total_count else ""
@@ -164,10 +93,7 @@ def download(url, format_choice, title, download_dir, index=None, total_count=No
     opts = _build_options(download_dir, format_choice)
 
     with yt_dlp.YoutubeDL(opts) as ydl:
-        if _using_aria2c():
-            _download_with_progress(ydl, url, download_dir, label)
-        else:
-            ydl.download([url])
+        ydl.download([url])
 
     print()
     ok(f"{label}Selesai. File tersimpan di: {download_dir}")
@@ -181,6 +107,13 @@ def _log_history(title, url, download_dir):
 
 
 def _progress_hook(d):
+    # Hook ini hanya benar-benar dapat data real-time saat TIDAK pakai
+    # external downloader (aria2c). Saat aria2c aktif, progress native
+    # aria2c sendiri yang tampil (lihat _speed_options), hook ini dilewati
+    # supaya tidak tabrakan/duplikat dengan output aria2c.
+    if _using_aria2c():
+        return
+
     if d["status"] == "downloading":
         total = d.get("total_bytes") or d.get("total_bytes_estimate")
         downloaded = d.get("downloaded_bytes", 0)
