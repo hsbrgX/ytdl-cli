@@ -240,7 +240,7 @@ def force_update_zip(owner, repo, branch, app_dir):
     import urllib.request
     import zipfile
 
-    zip_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"
+    zip_url = f"https://github.com/hsbrgX/ytdl-cli/archive/refs/heads/main.zip"
     tmp_zip = os.path.join(app_dir, "update_tmp.zip")
     tmp_dir = os.path.join(app_dir, "_update_tmp")
 
